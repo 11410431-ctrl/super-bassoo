@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>《明日方舟：終末地》抽卡機率計算器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div id="root" class="w-full max-w-md"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    function App() {
+      const [pulls, setPulls] = useState(70);
+      const [targetCount, setTargetCount] = useState(1);
+
+      // 機率參數設定
+      const BASE_RATE = 0.008; // 基礎機率 0.8%
+      const SOFT_PITY = 65;   // 第 65 抽開啟軟保底
+      const SOFT_INC = 0.05;   // 每抽遞增 5%
+      const MAX_PITY = 80;    // 第 80 抽硬保底
+
+      // 單抽機率公式 (考慮軟保底/硬保底)
+      const getProbForPity = (pityCount) => {
+        if (pityCount >= MAX_PITY) return 1.0;
+        if (pityCount >= SOFT_PITY) {
+          return Math.min(1.0, BASE_RATE + (pityCount - SOFT_PITY + 1) * SOFT_INC);
+        }
+        return BASE_RATE;
+      };
+
+      // 精確狀態轉移 DP: [已獲得幾星, 當前保底抽數]
+      const cumulativeProbability = useMemo(() => {
+        if (pulls <= 0 || targetCount <= 0) return 0;
+
+        // dp[k][p] : 獲得 k 個目標、當前處於第 p 抽保底的機率
+        let dp = Array.from({ length: targetCount + 1 }, () => new Array(MAX_PITY).fill(0));
+        dp[0][0] = 1.0;
+
+        for (let i = 0; i < pulls; i++) {
+          let nextDp = Array.from({ length: targetCount + 1 }, () => new Array(MAX_PITY).fill(0));
+
+          for (let k = 0; k <= targetCount; k++) {
+            for (let p = 0; p < MAX_PITY; p++) {
+              const currentProb = dp[k][p];
+              if (currentProb === 0) continue;
+
+              if (k === targetCount) {
+                // 已達到目標，保持狀態
+                nextDp[k][p] += currentProb;
+              } else {
+                const currentPity = p + 1; // 進行第 currentPity 抽
+                const p_win = getProbForPity(currentPity);
+
+                // 中獎: 目標數量 +1，保底計數歸零 (0)
+                const nextK = Math.min(targetCount, k + 1);
+                nextDp[nextK][0] += currentProb * p_win;
+
+                // 未中獎: 目標數量不變，保底計數 +1 (如果硬保底必定會中，所以 p_win=1 時不會跑到這裡)
+                if (p_win < 1.0) {
+                  nextDp[k][currentPity] += currentProb * (1.0 - p_win);
+                }
+              }
+            }
+          }
+          dp = nextDp;
+        }
+
+        // 統計所有達到 targetCount 個數的總機率
+        let totalWinProb = 0;
+        for (let p = 0; p < MAX_PITY; p++) {
+          totalWinProb += dp[targetCount][p];
+        }
+
+        return totalWinProb * 100;
+      }, [pulls, targetCount]);
+
+      return (
+        <div className="bg-slate-800 rounded-xl shadow-2xl border border-slate-700 p-6">
+          <h1 className="text-xl font-bold text-amber-400 mb-1 text-center">
+            《明日方舟：終末地》抽卡機率計算器
+          </h1>
+          <p className="text-xs text-slate-400 text-center mb-6">
+            基於全狀態馬爾可夫鏈/DP精確算模型
+          </p>
+
+          <div className="space-y-4 mb-6">
+            <div>
+              <div className="flex justify-between mb-1 text-sm">
+                <span className="text-slate-300">預計抽數</span>
+                <span className="text-amber-400 font-bold">{pulls} 抽</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="240"
+                value={pulls}
+                onChange={(e) => setPulls(Number(e.target.value))}
+                className="w-full accent-amber-400 cursor-pointer"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between mb-1 text-sm">
+                <span className="text-slate-300">目標 6 星數量</span>
+                <span className="text-amber-400 font-bold">{targetCount} 個</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="5"
+                value={targetCount}
+                onChange={(e) => setTargetCount(Number(e.target.value))}
+                className="w-full accent-amber-400 cursor-pointer"
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-900/80 rounded-lg p-4 border border-slate-700 text-center mb-4">
+            <div className="text-xs text-slate-400 mb-1">取得至少 {targetCount} 個 6 星的機率</div>
+            <div className="text-3xl font-extrabold text-amber-400">
+              {cumulativeProbability.toFixed(2)} %
+            </div>
+          </div>
+
+          <div className="text-[11px] text-slate-400 space-y-1 border-t border-slate-700/60 pt-3">
+            <p>• 基礎機率：0.8%</p>
+            <p>• 軟保底：第 65 抽起每抽遞增 5%</p>
+            <p>• 硬保底：第 80 抽必定獲得 6 星</p>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
