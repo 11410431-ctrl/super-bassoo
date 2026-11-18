@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -37,7 +37,7 @@
       return BASE_RATE;
     };
 
-    // ==================== 1. 機率計算器元件 ====================
+    // ==================== 1. 機率計算器 + 1000次大數據模擬元件 ====================
     function CalculatorTab() {
       const [budgetPulls, setBudgetPulls] = useState(120);
       const [targetCount, setTargetCount] = useState(1);
@@ -47,6 +47,9 @@
       const [use30For10, setUse30For10] = useState(true);
       const [use120Pity, setUse120Pity] = useState(true);
       const [use240Bonus, setUse240Bonus] = useState(true);
+
+      // 1,000 次蒙地卡羅模擬結果狀態
+      const [simStats, setSimStats] = useState(null);
 
       const bonusFreePulls = useMemo(() => {
         return (use30For10 && budgetPulls >= 30) ? 10 : 0;
@@ -129,6 +132,99 @@
         }
         return totalWinProb * 100;
       }, [budgetPulls, targetCount, currentPity, upRate, use120Pity, bonusFreePulls, milestoneUPCount]);
+
+      // 執行一鍵模擬 1,000 次達到目標 UP 數量
+      const runMonteCarlo1000 = () => {
+        const TRIALS = 1000;
+        const results = [];
+
+        for (let t = 0; t < TRIALS; t++) {
+          let validPulls = 0;
+          let pity = Math.min(currentPity, MAX_PITY - 1);
+          let upPulled = 0;
+          let tokenCount = 0;
+
+          while (upPulled + tokenCount < targetCount && validPulls < 2000) {
+            validPulls += 1;
+
+            // 檢查滿 240 抽贈送潛能信物
+            if (use240Bonus && validPulls % 240 === 0) {
+              tokenCount += 1;
+              if (upPulled + tokenCount >= targetCount) break;
+            }
+
+            // 檢查第 120 抽首個 UP 硬保底
+            if (use120Pity && validPulls === 120 && upPulled === 0) {
+              upPulled += 1;
+              pity = 0;
+            } else {
+              pity += 1;
+              const prob = getProbForPity(pity);
+              if (Math.random() < prob) {
+                pity = 0;
+                if (Math.random() < upRate) {
+                  upPulled += 1;
+                }
+              }
+            }
+
+            if (upPulled + tokenCount >= targetCount) break;
+
+            // 滿 30 抽贈送當期獨立 10 連抽（不增減 validPulls 與 pity）
+            if (use30For10 && validPulls === 30) {
+              for (let f = 0; f < 10; f++) {
+                const freeProb = getProbForPity(Math.max(1, pity));
+                if (Math.random() < freeProb) {
+                  pity = 0;
+                  if (Math.random() < upRate) {
+                    upPulled += 1;
+                    if (upPulled + tokenCount >= targetCount) break;
+                  }
+                }
+              }
+            }
+          }
+
+          results.push(validPulls);
+        }
+
+        results.sort((a, b) => a - b);
+        const sum = results.reduce((acc, v) => acc + v, 0);
+        const avg = (sum / TRIALS).toFixed(1);
+        const p10 = results[Math.floor(TRIALS * 0.1)];
+        const median = results[Math.floor(TRIALS * 0.5)];
+        const p90 = results[Math.floor(TRIALS * 0.9)];
+        const withinBudget = results.filter((v) => v <= budgetPulls).length;
+
+        // 動態切分 6 個直方圖區間
+        const step = targetCount === 1 ? 20 : (targetCount === 2 ? 40 : 80);
+        const buckets = [
+          { label: `1~${step}抽`, min: 1, max: step, count: 0 },
+          { label: `${step + 1}~${step * 2}抽`, min: step + 1, max: step * 2, count: 0 },
+          { label: `${step * 2 + 1}~${step * 3}抽`, min: step * 2 + 1, max: step * 3, count: 0 },
+          { label: `${step * 3 + 1}~${step * 4}抽`, min: step * 3 + 1, max: step * 4, count: 0 },
+          { label: `${step * 4 + 1}~${step * 5}抽`, min: step * 4 + 1, max: step * 5, count: 0 },
+          { label: `${step * 5 + 1}抽以上`, min: step * 5 + 1, max: Infinity, count: 0 }
+        ];
+
+        results.forEach((v) => {
+          const b = buckets.find((item) => v >= item.min && v <= item.max);
+          if (b) b.count += 1;
+        });
+
+        const maxBucketCount = Math.max(...buckets.map((b) => b.count), 1);
+
+        setSimStats({
+          target: targetCount,
+          avg,
+          p10,
+          median,
+          p90,
+          withinBudgetRate: ((withinBudget / TRIALS) * 100).toFixed(1),
+          buckets,
+          maxBucketCount
+        });
+      };
 
       return (
         <div className="space-y-4">
@@ -240,11 +336,75 @@
 
           <div className="bg-slate-900/90 rounded-lg p-4 border border-slate-700 text-center">
             <div className="text-xs text-slate-400 mb-1">
-              取得至少 {targetCount} 個 UP 6 星的成功機率
+              投入 {budgetPulls} 抽取得至少 {targetCount} 個 UP 6 星的理論機率
             </div>
             <div className="text-3xl font-extrabold text-amber-400">
               {cumulativeProbability.toFixed(2)} %
             </div>
+          </div>
+
+          {/* 一鍵模擬 1,000 次大數據區塊 */}
+          <div className="pt-1 space-y-2.5">
+            <button
+              onClick={runMonteCarlo1000}
+              className="w-full py-2.5 rounded-lg font-bold text-xs bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-lg shadow-sky-500/20 cursor-pointer"
+            >
+              🎲 一鍵模擬 1,000 次（測試取得 {targetCount} 個 UP 花費抽數分佈）
+            </button>
+
+            {simStats && (
+              <div className="bg-slate-900/90 rounded-lg p-3 border border-sky-500/40 space-y-3">
+                <div className="flex items-center justify-between text-xs border-b border-slate-800 pb-1.5">
+                  <span className="font-bold text-sky-400">
+                    📊 1,000 次模擬大數據（目標 {simStats.target} 個 UP）
+                  </span>
+                  <span className="text-[11px] text-emerald-400">
+                    預算內達標：{simStats.withinBudgetRate}%
+                  </span>
+                </div>
+
+                {/* 四項關鍵百分位數據 */}
+                <div className="grid grid-cols-4 gap-1.5 text-center">
+                  <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                    <div className="text-[10px] text-slate-400">平均花費</div>
+                    <div className="text-sm font-bold text-amber-400">{simStats.avg}抽</div>
+                  </div>
+                  <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                    <div className="text-[10px] text-slate-400">10%歐皇線</div>
+                    <div className="text-sm font-bold text-emerald-400">{simStats.p10}抽</div>
+                  </div>
+                  <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                    <div className="text-[10px] text-slate-400">50%中位數</div>
+                    <div className="text-sm font-bold text-slate-200">{simStats.median}抽</div>
+                  </div>
+                  <div className="bg-slate-950/80 p-1.5 rounded border border-slate-800">
+                    <div className="text-[10px] text-slate-400">90%保底線</div>
+                    <div className="text-sm font-bold text-rose-400">{simStats.p90}抽</div>
+                  </div>
+                </div>
+
+                {/* 抽數區間分佈長條圖 */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] text-slate-400">有效抽數消耗區間分佈（1,000 樣本）：</div>
+                  {simStats.buckets.map((b) => {
+                    const pct = ((b.count / 1000) * 100).toFixed(1);
+                    const barWidth = Math.round((b.count / simStats.maxBucketCount) * 100);
+                    return (
+                      <div key={b.label} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-20 text-slate-400 text-right shrink-0">{b.label}</span>
+                        <div className="flex-1 bg-slate-950 h-3 rounded overflow-hidden border border-slate-800">
+                          <div
+                            className="bg-sky-400 h-full"
+                            style={{ width: `${barWidth}%` }}
+                          />
+                        </div>
+                        <span className="w-12 text-slate-300 text-right shrink-0">{pct}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
@@ -277,7 +437,6 @@
       const FIVE_STAR_POOL = ["5★·陳千語", "5★·狼衛", "5★·晝雪", "5★·弧光", "5★·艾維文娜", "5★·大潘"];
       const FOUR_STAR_POOL = ["4★·埃特拉", "4★·卡契爾", "4★·秋栗", "4★·螢石", "4★·安塔爾"];
 
-      // 執行抽卡核心函數
       const executePulls = (count, isFree = false) => {
         let curValid = validPulls;
         let curFree = freePullsUsed;
@@ -691,7 +850,7 @@
 
     // ==================== 主應用程式 ====================
     function App() {
-      const [activeTab, setActiveTab] = useState("simulator");
+      const [activeTab, setActiveTab] = useState("calculator");
 
       return (
         <div className="bg-slate-800 rounded-xl shadow-2xl border border-slate-700 p-5 space-y-4 w-full">
