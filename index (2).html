@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>《明日方舟：終末地》抽卡計算器與模擬器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* 自訂捲軸樣式 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex items-center justify-center p-4">
+  <div id="root" class="w-full max-w-md"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    // 常規保底參數 (計算器與模擬器共用)
+    const BASE_RATE = 0.008; // 基礎機率 0.8%
+    const FIVE_STAR_RATE = 0.08; // 5星基礎機率 8%
+    const SOFT_PITY = 65;    // 第 65 抽開啟軟保底
+    const SOFT_INC = 0.05;   // 每抽遞增 5%
+    const MAX_PITY = 80;     // 第 80 抽硬保底
+
+    // 單抽 6 星出現率計算
+    const getProbForPity = (pityCount) => {
+      if (pityCount >= MAX_PITY) return 1.0;
+      if (pityCount >= SOFT_PITY) {
+        return Math.min(1.0, BASE_RATE + (pityCount - SOFT_PITY + 1) * SOFT_INC);
+      }
+      return BASE_RATE;
+    };
+
+    // ==================== 1. 機率計算器元件 ====================
+    function CalculatorTab() {
+      const [budgetPulls, setBudgetPulls] = useState(120);
+      const [targetCount, setTargetCount] = useState(1);
+      const [currentPity, setCurrentPity] = useState(0);
+      const [upRate, setUpRate] = useState(0.5);
+
+      const [use30For10, setUse30For10] = useState(true);
+      const [use120Pity, setUse120Pity] = useState(true);
+      const [use240Bonus, setUse240Bonus] = useState(true);
+
+      const bonusFreePulls = useMemo(() => {
+        return (use30For10 && budgetPulls >= 30) ? 10 : 0;
+      }, [budgetPulls, use30For10]);
+
+      const totalDisplayPulls = budgetPulls + bonusFreePulls;
+
+      const milestoneUPCount = useMemo(() => {
+        if (!use240Bonus) return 0;
+        return Math.floor(budgetPulls / 240);
+      }, [budgetPulls, use240Bonus]);
+
+      const cumulativeProbability = useMemo(() => {
+        if (budgetPulls <= 0 || targetCount <= 0) return 0;
+
+        const neededFromPulls = Math.max(0, targetCount - milestoneUPCount);
+        if (neededFromPulls === 0) return 100.0;
+
+        let dp = Array.from({ length: neededFromPulls + 1 }, () => new Array(MAX_PITY).fill(0));
+        const initPity = Math.min(currentPity, MAX_PITY - 1);
+        dp[0][initPity] = 1.0;
+
+        for (let i = 1; i <= budgetPulls; i++) {
+          let nextDp = Array.from({ length: neededFromPulls + 1 }, () => new Array(MAX_PITY).fill(0));
+          for (let k = 0; k <= neededFromPulls; k++) {
+            for (let p = 0; p < MAX_PITY; p++) {
+              const currentProb = dp[k][p];
+              if (currentProb === 0) continue;
+
+              if (k === neededFromPulls) {
+                nextDp[k][p] += currentProb;
+              } else {
+                const is120HardPity = use120Pity && (i === 120) && (k === 0);
+                if (is120HardPity) {
+                  const nextK = Math.min(neededFromPulls, k + 1);
+                  nextDp[nextK][0] += currentProb;
+                } else {
+                  const pityNext = p + 1;
+                  const p_win = getProbForPity(pityNext);
+
+                  if (p_win < 1.0) {
+                    nextDp[k][pityNext] += currentProb * (1.0 - p_win);
+                  }
+                  const nextK = Math.min(neededFromPulls, k + 1);
+                  nextDp[nextK][0] += currentProb * p_win * upRate;
+                  nextDp[k][0] += currentProb * p_win * (1.0 - upRate);
+                }
+              }
+            }
+          }
+          dp = nextDp;
+        }
+
+        for (let f = 0; f < bonusFreePulls; f++) {
+          let nextDp = Array.from({ length: neededFromPulls + 1 }, () => new Array(MAX_PITY).fill(0));
+          for (let k = 0; k <= neededFromPulls; k++) {
+            for (let p = 0; p < MAX_PITY; p++) {
+              const currentProb = dp[k][p];
+              if (currentProb === 0) continue;
+
+              if (k === neededFromPulls) {
+                nextDp[k][p] += currentProb;
+              } else {
+                const p_win = getProbForPity(p);
+                if (p_win < 1.0) {
+                  nextDp[k][p] += currentProb * (1.0 - p_win);
+                }
+                const nextK = Math.min(neededFromPulls, k + 1);
+                nextDp[nextK][0] += currentProb * p_win * upRate;
+                nextDp[k][0] += currentProb * p_win * (1.0 - upRate);
+              }
+            }
+          }
+          dp = nextDp;
+        }
+
+        let totalWinProb = 0;
+        for (let p = 0; p < MAX_PITY; p++) {
+          totalWinProb += dp[neededFromPulls][p];
+        }
+        return totalWinProb * 100;
+      }, [budgetPulls, targetCount, currentPity, upRate, use120Pity, bonusFreePulls, milestoneUPCount]);
+
+      return (
+        <div className="space-y-4">
+          {/* 投入抽數預算 */}
+          <div>
+            <div className="flex justify-between mb-1 text-sm">
+              <span className="text-slate-300">投入有效抽數（預算）</span>
+              <span className="text-amber-400 font-bold">{budgetPulls} 抽</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="360"
+              value={budgetPulls}
+              onChange={(e) => setBudgetPulls(Number(e.target.value))}
+              className="w-full accent-amber-400 cursor-pointer"
+            />
+            <div className="flex flex-col gap-0.5 text-[11px] mt-1">
+              {use30For10 && (
+                <div className="text-emerald-400 text-right">
+                  {bonusFreePulls > 0 ? (
+                    <>滿 30 抽贈送 +10 抽（不計保底）➔ 當期合計 <span className="font-bold">{totalDisplayPulls}</span> 抽</>
+                  ) : (
+                    <>未滿 30 抽，未觸發當期 +10 抽贈送</>
+                  )}
+                </div>
+              )}
+              {budgetPulls >= 60 && (
+                <div className="text-sky-400 text-right">
+                  💡 已滿 60 抽：可額外獲贈 <span className="font-semibold">下一期卡池 10 連券</span>（不計入當期）
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 目標 UP 數量 */}
+          <div>
+            <div className="flex justify-between mb-1 text-sm">
+              <span className="text-slate-300">目標 UP 6 星數量（含潛能）</span>
+              <span className="text-amber-400 font-bold">{targetCount} 個</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="6"
+              value={targetCount}
+              onChange={(e) => setTargetCount(Number(e.target.value))}
+              className="w-full accent-amber-400 cursor-pointer"
+            />
+            {use240Bonus && milestoneUPCount > 0 && (
+              <div className="text-right text-[11px] text-amber-300 mt-0.5">
+                已自動抵扣有效累計滿 240 抽贈送的 {milestoneUPCount} 個潛能信物
+              </div>
+            )}
+          </div>
+
+          {/* 已累積保底與 UP 機率設定 */}
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label className="text-xs text-slate-300 block mb-1">當前累積保底抽數</label>
+              <input
+                type="number"
+                min="0"
+                max="79"
+                value={currentPity}
+                onChange={(e) => setCurrentPity(Math.max(0, Math.min(79, Number(e.target.value))))}
+                className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-sm text-amber-400 text-center focus:outline-none focus:border-amber-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-300 block mb-1">6星中 UP 機率</label>
+              <select
+                value={upRate}
+                onChange={(e) => setUpRate(Number(e.target.value))}
+                className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-sm text-amber-400 text-center focus:outline-none focus:border-amber-400"
+              >
+                <option value={0.5}>50% (標準)</option>
+                <option value={0.7}>70%</option>
+              </select>
+            </div>
+          </div>
+
+          {/* 特殊保底機制開關 */}
+          <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-700/80 space-y-2 text-xs">
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-slate-300">滿 30 抽送當期 10 抽（單期一次）</span>
+              <input
+                type="checkbox"
+                checked={use30For10}
+                onChange={(e) => setUse30For10(e.target.checked)}
+                className="w-4 h-4 accent-amber-400 rounded"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-slate-300">有效累計 120 抽首個 UP 硬保底</span>
+              <input
+                type="checkbox"
+                checked={use120Pity}
+                onChange={(e) => setUse120Pity(e.target.checked)}
+                className="w-4 h-4 accent-amber-400 rounded"
+              />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-slate-300">有效累計滿 240 抽送 UP 潛能信物</span>
+              <input
+                type="checkbox"
+                checked={use240Bonus}
+                onChange={(e) => setUse240Bonus(e.target.checked)}
+                className="w-4 h-4 accent-amber-400 rounded"
+              />
+            </label>
+          </div>
+
+          {/* 機率結果展示 */}
+          <div className="bg-slate-900/90 rounded-lg p-4 border border-slate-700 text-center">
+            <div className="text-xs text-slate-400 mb-1">
+              取得至少 {targetCount} 個 UP 6 星的成功機率
+            </div>
+            <div className="text-3xl font-extrabold text-amber-400">
+              {cumulativeProbability.toFixed(2)} %
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ==================== 2. 抽卡模擬器元件 ====================
+    function SimulatorTab() {
+      // 模擬器設定
+      const [upName, setUpName] = useState("當期UP 6★幹員");
+      const [upRate, setUpRate] = useState(0.5);
+      const [use30For10, setUse30For10] = useState(true);
+      const [use120Pity, setUse120Pity] = useState(true);
+      const [use240Bonus, setUse240Bonus] = useState(true);
+
+      // 抽卡核心狀態
+      const [validPulls, setValidPulls] = useState(0);       // 有效投入抽數
+      const [freePullsUsed, setFreePullsUsed] = useState(0); // 已使用贈送抽數
+      const [pity6, setPity6] = useState(0);                 // 當前 6 星保底計數
+      const [pity5, setPity5] = useState(0);                 // 當前 5 星保底計數
+      const [upCount, setUpCount] = useState(0);             // 抽到的 UP 6 星數量
+      const [offBannerCount, setOffBannerCount] = useState(0); // 歪掉的常駐 6 星數量
+      const [tokenCount, setTokenCount] = useState(0);       // 240 抽信物數量
+      const [hasClaimed30Bonus, setHasClaimed30Bonus] = useState(false); // 是否已領過 30 抽送 10 連
+      const [freeTenAvailable, setFreeTenAvailable] = useState(false);   // 是否有待領取的免費 10 連
+
+      // 畫面展示狀態
+      const [latestPulls, setLatestPulls] = useState([]); // 最近一次抽卡結果
+      const [history, setHistory] = useState([]);         // 歷史紀錄 (含 5★ 與 6★ 或全紀錄)
+      const [filter6Only, setFilter6Only] = useState(false);
+      const [bannerNotice, setBannerNotice] = useState("");
+
+      // 常駐池與低星名稱庫
+      const OFF_BANNER_POOL = ["常駐6★·佩麗卡", "常駐6★·賽希", "常駐6★·黎風", "常駐6★·餘燼", "常駐6★·艾爾黛拉"];
+      const FIVE_STAR_POOL = ["5★·陳千語", "5★·狼衛", "5★·晝雪", "5★·弧光", "5★·艾維文娜", "5★·大潘"];
+      const FOUR_STAR_POOL = ["4★·埃特拉", "4★·卡契爾", "4★·秋栗", "4★·螢石", "4★·安塔爾"];
+
+      // 執行抽卡核心函數 (isFree = true 代表滿 30 抽贈送的獨立 10 連)
+      const executePulls = (count, isFree = false) => {
+        let curValid = validPulls;
+        let curFree = freePullsUsed;
+        let curP6 = pity6;
+        let curP5 = pity5;
+        let curUp = upCount;
+        let curOff = offBannerCount;
+        let curToken = tokenCount;
+        let claimed30 = hasClaimed30Bonus;
+        let freeTenReady = freeTenAvailable;
+        let notices = [];
+
+        const batchResults = [];
+
+        for (let i = 0; i < count; i++) {
+          let pullIndexDisplay = "";
+
+          if (!isFree) {
+            curValid += 1;
+            pullIndexDisplay = `#${curValid}`;
+
+            // 檢查滿 30 抽贈送當期 10 連 (單期一次)
+            if (use30For10 && curValid === 30 && !claimed30) {
+              claimed30 = true;
+              freeTenReady = true;
+              notices.push("🎉 有效抽數滿 30 抽！已解鎖【免費贈送當期 10 連】（不計保底）");
+            }
+
+            // 檢查滿 240 抽贈送 UP 潛能信物
+            if (use240Bonus && curValid % 240 === 0) {
+              curToken += 1;
+              notices.push(`🏆 有效抽數達 ${curValid} 抽！獲贈 1 個【${upName} 潛能信物】`);
+            }
+          } else {
+            curFree += 1;
+            pullIndexDisplay = `贈#${curFree}`;
+          }
+
+          // 判斷是否觸發 120 抽首個 UP 硬保底 (僅有效抽數第 120 抽且尚未獲得任何 UP 時)
+          const is120Triggered = !isFree && use120Pity && curValid === 120 && curUp === 0;
+
+          let rarity = 4;
+          let itemName = "";
+          let isUp = false;
+          let tag = "";
+
+          if (is120Triggered) {
+            rarity = 6;
+            isUp = true;
+            itemName = upName;
+            tag = "120抽大保底";
+            curP6 = 0;
+            curP5 = 0;
+            curUp += 1;
+          } else {
+            // 計算當前 6 星機率：有效抽數保底+1；贈送抽不增加保底，按當前 curP6 獨立判定
+            const effectivePityForRate = isFree ? Math.max(1, curP6) : curP6 + 1;
+            const prob6 = getProbForPity(effectivePityForRate);
+            const roll = Math.random();
+
+            if (roll < prob6) {
+              // 中 6 星
+              rarity = 6;
+              if (!isFree) {
+                tag = curP6 + 1 === MAX_PITY ? "80抽保底" : (curP6 + 1 >= SOFT_PITY ? `軟保底第${curP6 + 1}抽` : `第${curP6 + 1}抽出貨`);
+              } else {
+                tag = "贈送抽歐氣出貨";
+              }
+              curP6 = 0;
+              curP5 = 0;
+
+              if (Math.random() < upRate) {
+                isUp = true;
+                itemName = upName;
+                curUp += 1;
+              } else {
+                isUp = false;
+                itemName = OFF_BANNER_POOL[Math.floor(Math.random() * OFF_BANNER_POOL.length)];
+                curOff += 1;
+              }
+            } else {
+              // 未中 6 星：若是有效抽數則增加保底計數，贈送抽則保持原樣
+              if (!isFree) {
+                curP6 += 1;
+              }
+
+              // 判斷 5 星 (含每 10 抽保底機制)
+              const nextP5 = curP5 + 1;
+              if (nextP5 >= 10 || roll < prob6 + FIVE_STAR_RATE) {
+                rarity = 5;
+                curP5 = 0;
+                itemName = FIVE_STAR_POOL[Math.floor(Math.random() * FIVE_STAR_POOL.length)];
+                tag = nextP5 >= 10 ? "十連保底" : "";
+              } else {
+                rarity = 4;
+                curP5 = nextP5;
+                itemName = FOUR_STAR_POOL[Math.floor(Math.random() * FOUR_STAR_POOL.length)];
+              }
+            }
+          }
+
+          batchResults.push({
+            id: `${Date.now()}-${i}-${Math.random()}`,
+            pullNo: pullIndexDisplay,
+            rarity,
+            name: itemName,
+            isUp,
+            tag,
+            isFree
+          });
+        }
+
+        if (isFree) {
+          freeTenReady = false;
+        }
+
+        // 更新狀態
+        setValidPulls(curValid);
+        setFreePullsUsed(curFree);
+        setPity6(curP6);
+        setPity5(curP5);
+        setUpCount(curUp);
+        setOffBannerCount(curOff);
+        setTokenCount(curToken);
+        setHasClaimed30Bonus(claimed30);
+        setFreeTenAvailable(freeTenReady);
+        setLatestPulls(batchResults);
+        setHistory((prev) => [...batchResults.slice().reverse(), ...prev].slice(0, 300)); // 最多保留最近300抽紀錄
+        if (notices.length > 0) {
+          setBannerNotice(notices.join(" ｜ "));
+        } else {
+          setBannerNotice("");
+        }
+      };
+
+      // 重置模擬器
+      const handleReset = () => {
+        setValidPulls(0);
+        setFreePullsUsed(0);
+        setPity6(0);
+        setPity5(0);
+        setUpCount(0);
+        setOffBannerCount(0);
+        setTokenCount(0);
+        setHasClaimed30Bonus(false);
+        setFreeTenAvailable(false);
+        setLatestPulls([]);
+        setHistory([]);
+        setBannerNotice("");
+      };
+
+      // 當前下一抽 6 星機率展示
+      const nextPullProb = (getProbForPity(pity6 + 1) * 100).toFixed(1);
+      const totalUpObtained = upCount + tokenCount;
+      const displayedHistory = filter6Only ? history.filter((item) => item.rarity === 6) : history;
+
+      return (
+        <div className="space-y-4">
+          {/* 卡池設定列 */}
+          <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-700/80 space-y-2.5">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <label className="text-[11px] text-slate-400 block mb-1">當期 UP 6★ 名稱</label>
+                <input
+                  type="text"
+                  value={upName}
+                  onChange={(e) => setUpName(e.target.value || "當期UP 6★")}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-amber-300 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">UP 機率</label>
+                <select
+                  value={upRate}
+                  onChange={(e) => setUpRate(Number(e.target.value))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs text-amber-400 focus:outline-none focus:border-amber-400"
+                >
+                  <option value={0.5}>50%</option>
+                  <option value={0.7}>70%</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-300 pt-0.5">
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={use30For10} onChange={(e) => setUse30For10(e.target.checked)} className="accent-amber-400" />
+                滿30送10連
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={use120Pity} onChange={(e) => setUse120Pity(e.target.checked)} className="accent-amber-400" />
+                120首UP保底
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={use240Bonus} onChange={(e) => setUse240Bonus(e.target.checked)} className="accent-amber-400" />
+                240送信物
+              </label>
+            </div>
+          </div>
+
+          {/* 數據儀表板 */}
+          <div className="grid grid-cols-4 gap-2 text-center">
+            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-700/80">
+              <div className="text-[10px] text-slate-400">有效總抽數</div>
+              <div className="text-base font-bold text-slate-100">{validPulls}</div>
+              {freePullsUsed > 0 && <div className="text-[9px] text-emerald-400">+{freePullsUsed} 贈抽</div>}
+            </div>
+            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-700/80">
+              <div className="text-[10px] text-slate-400">6★保底計數</div>
+              <div className="text-base font-bold text-amber-400">{pity6} <span className="text-[10px] text-slate-500">/80</span></div>
+              <div className="text-[9px] text-slate-400">下抽 {nextPullProb}%</div>
+            </div>
+            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-700/80">
+              <div className="text-[10px] text-slate-400">當期 UP 數</div>
+              <div className="text-base font-bold text-amber-400">{totalUpObtained}</div>
+              {tokenCount > 0 && <div className="text-[9px] text-amber-300">含{tokenCount}信物</div>}
+            </div>
+            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-700/80">
+              <div className="text-[10px] text-slate-400">歪常駐 6★</div>
+              <div className="text-base font-bold text-rose-400">{offBannerCount}</div>
+              <div className="text-[9px] text-slate-400">
+                {upCount + offBannerCount > 0 ? `不歪率 ${Math.round((upCount / (upCount + offBannerCount)) * 100)}%` : "-"}
+              </div>
+            </div>
+          </div>
+
+          {/* 保底與大保底進度條 */}
+          <div className="space-y-1.5 text-[11px]">
+            <div>
+              <div className="flex justify-between text-slate-400 mb-0.5">
+                <span>距離 80 抽小保底（第 65 抽起機率提升）</span>
+                <span className="text-amber-400 font-medium">還差 {MAX_PITY - pity6} 抽</span>
+              </div>
+              <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-700">
+                <div
+                  className={`h-full transition-all duration-300 ${pity6 >= SOFT_PITY ? "bg-amber-400" : "bg-sky-400"}`}
+                  style={{ width: `${(pity6 / MAX_PITY) * 100}%` }}
+                />
+              </div>
+            </div>
+
+            {use120Pity && upCount === 0 && (
+              <div>
+                <div className="flex justify-between text-slate-400 mb-0.5">
+                  <span>距離 120 抽首個 UP 硬保底</span>
+                  <span className="text-emerald-400 font-medium">還差 {Math.max(0, 120 - validPulls)} 有效抽</span>
+                </div>
+                <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-700">
+                  <div
+                    className="bg-emerald-400 h-full transition-all duration-300"
+                    style={{ width: `${Math.min(100, (validPulls / 120) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 系統通知橫幅 */}
+          {bannerNotice && (
+            <div className="bg-amber-500/20 border border-amber-400/50 text-amber-200 text-xs px-3 py-2 rounded-lg text-center">
+              {bannerNotice}
+            </div>
+          )}
+
+          {/* 抽卡按鈕區 */}
+          <div className="space-y-2">
+            {freeTenAvailable && (
+              <button
+                onClick={() => executePulls(10, true)}
+                className="w-full py-2.5 rounded-lg font-bold text-sm bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 shadow-lg shadow-emerald-500/20 transition cursor-pointer animate-pulse"
+              >
+                🎁 領取並執行免費贈送 10 連抽（不計保底）
+              </button>
+            )}
+
+            <div className="grid grid-cols-5 gap-2">
+              <button
+                onClick={() => executePulls(1, false)}
+                className="col-span-2 py-2.5 rounded-lg font-bold text-sm bg-slate-700 hover:bg-slate-600 text-slate-100 border border-slate-600 transition cursor-pointer"
+              >
+                單抽 ×1
+              </button>
+              <button
+                onClick={() => executePulls(10, false)}
+                className="col-span-2 py-2.5 rounded-lg font-bold text-sm bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-lg shadow-amber-400/20 transition cursor-pointer"
+              >
+                十連抽 ×10
+              </button>
+              <button
+                onClick={handleReset}
+                title="清空所有抽卡紀錄與保底"
+                className="col-span-1 py-2.5 rounded-lg font-semibold text-xs bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition cursor-pointer"
+              >
+                重置
+              </button>
+            </div>
+          </div>
+
+          {/* 本次抽卡結果展示區 */}
+          <div className="bg-slate-900/90 rounded-lg p-3 border border-slate-700 min-h-[120px] flex flex-col justify-center">
+            {latestPulls.length === 0 ? (
+              <div className="text-center text-xs text-slate-500">
+                點擊上方「單抽」或「十連抽」開始模擬尋訪
+              </div>
+            ) : (
+              <div>
+                <div className="text-[11px] text-slate-400 mb-2 flex justify-between">
+                  <span>本次尋訪結果（{latestPulls.length} 抽）</span>
+                  {latestPulls.some((p) => p.rarity === 6) && (
+                    <span className="text-amber-400 font-bold">✨ 出現 6★ 幹員！</span>
+                  )}
+                </div>
+                <div className={`grid ${latestPulls.length === 1 ? "grid-cols-1" : "grid-cols-2"} gap-1.5`}>
+                  {latestPulls.map((item) => {
+                    const styleMap = {
+                      6: item.isUp
+                        ? "bg-gradient-to-r from-amber-500/30 to-orange-500/30 border-amber-400 text-amber-300 font-bold shadow-sm shadow-amber-500/20"
+                        : "bg-gradient-to-r from-rose-500/25 to-amber-500/20 border-rose-400/80 text-rose-200 font-bold",
+                      5: "bg-purple-500/15 border-purple-400/50 text-purple-200",
+                      4: "bg-slate-800/80 border-slate-700/80 text-slate-400"
+                    };
+                    return (
+                      <div
+                        key={item.id}
+                        className={`px-2.5 py-1.5 rounded border text-xs flex items-center justify-between ${styleMap[item.rarity]}`}
+                      >
+                        <div className="truncate pr-1">
+                          <span className="opacity-70 text-[10px] mr-1">[{item.pullNo}]</span>
+                          <span>{item.name}</span>
+                        </div>
+                        {item.tag && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-black/40 whitespace-nowrap">
+                            {item.tag}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 抽卡歷史紀錄列表 */}
+          <div className="bg-slate-900/60 rounded-lg p-3 border border-slate-700/80">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-slate-300">
+                尋訪歷史紀錄（共 {history.length} 筆）
+              </span>
+              <label className="flex items-center gap-1 text-[11px] text-amber-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filter6Only}
+                  onChange={(e) => setFilter6Only(e.target.checked)}
+                  className="accent-amber-400"
+                />
+                僅顯示 6★
+              </label>
+            </div>
+
+            <div className="max-h-40 overflow-y-auto space-y-1 pr-1 text-xs">
+              {displayedHistory.length === 0 ? (
+                <div className="text-center text-[11px] text-slate-500 py-4">
+                  尚無符合條件的尋訪紀錄
+                </div>
+              ) : (
+                displayedHistory.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`flex items-center justify-between px-2 py-1 rounded ${
+                      item.rarity === 6
+                        ? "bg-amber-500/15 text-amber-300 font-semibold border border-amber-500/30"
+                        : item.rarity === 5
+                        ? "bg-purple-500/10 text-purple-300"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    <div>
+                      <span className="text-[10px] text-slate-500 inline-block w-12">{item.pullNo}</span>
+                      <span>{item.name}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {item.tag && <span className="text-[10px] text-amber-400/90">{item.tag}</span>}
+                      {item.rarity === 6 && (
+                        <span className={`text-[10px] px-1.5 rounded ${item.isUp ? "bg-amber-400 text-slate-950 font-bold" : "bg-rose-500/80 text-white"}`}>
+                          {item.isUp ? "UP" : "歪"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ==================== 主應用程式 (分頁切換) ====================
+    function App() {
+      const [activeTab, setActiveTab] = useState("simulator"); // 預設顯示模擬器，亦可切換計算器
+
+      return (
+        <div className="bg-slate-800 rounded-xl shadow-2xl border border-slate-700 p-5 space-y-4">
+          {/* 標題與雙分頁切換列 */}
+          <div>
+            <h1 className="text-xl font-bold text-amber-400 mb-1 text-center">
+              《明日方舟：終末地》尋訪工具箱
+            </h1>
+            <p className="text-xs text-slate-400 text-center mb-3">
+              精確適配：獨立贈送抽 / 120抽UP保底 / 240抽信物
+            </p>
+
+            <div className="grid grid-cols-2 bg-slate-900 p-1 rounded-lg border border-slate-700">
+              <button
+                onClick={() => setActiveTab("calculator")}
+                className={`py-1.5 text-xs font-bold rounded-md transition cursor-pointer ${
+                  activeTab === "calculator"
+                    ? "bg-amber-400 text-slate-950 shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📊 機率計算器
+              </button>
+              <button
+                onClick={() => setActiveTab("simulator")}
+                className={`py-1.5 text-xs font-bold rounded-md transition cursor-pointer ${
+                  activeTab === "simulator"
+                    ? "bg-amber-400 text-slate-950 shadow"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🎲 抽卡模擬器
+              </button>
+            </div>
+          </div>
+
+          {/* 內容區 */}
+          {activeTab === "calculator" ? <CalculatorTab /> : <SimulatorTab />}
+
+          {/* 機制說明提示 */}
+          <div className="text-[11px] text-slate-400 space-y-1 border-t border-slate-700/60 pt-3">
+            <p>• 基礎率：0.8% | 軟保底：第 65 抽起 +5% | 80 抽必出 6 星</p>
+            <p>• 當期贈送 10 抽獨立計算出貨，不累積保底與 120/240 門檻</p>
+            <p>• 滿 60 抽贈送之十連券僅適用於下一期卡池</p>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
